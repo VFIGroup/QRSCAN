@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Code Scanner to Google Sheets</title>
+    <script src="https://apis.google.com/js/api.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+</head>
+<body>
+    <h1>QR Code Scanner</h1>
+    <video id="video" width="640" height="480" autoplay></video>
+    <canvas id="canvas" style="display:none;"></canvas>
+    <p id="status">Initializing camera...</p>
+    <button id="startBtn">Start Scanning</button>
+    <button id="stopBtn" disabled>Stop Scanning</button>
+
+    <script>
+        // Replace with your actual values
+        const CLIENT_ID = 'YOUR_CLIENT_ID';  // From Google Cloud OAuth credentials
+        const SHEET_ID = 'YOUR_SHEET_ID';    // From your Google Sheet URL
+        const API_KEY = 'YOUR_API_KEY';      // Optional, for some API calls (get from Google Cloud)
+
+        // Initialize Google API
+        gapi.load('client:auth2', initClient);
+
+        function initClient() {
+            gapi.client.init({
+                apiKey: API_KEY,
+                clientId: CLIENT_ID,
+                discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4'],
+                scope: 'https://www.googleapis.com/auth/spreadsheets'
+            }).then(() => {
+                gapi.auth2.getAuthInstance().isSignedIn.listen(updateSigninStatus);
+                updateSigninStatus(gapi.auth2.getAuthInstance().isSignedIn.get());
+            });
+        }
+
+        function updateSigninStatus(isSignedIn) {
+            if (isSignedIn) {
+                console.log('Signed in to Google');
+            } else {
+                gapi.auth2.getAuthInstance().signIn();
+            }
+        }
+
+        // Camera and QR scanning variables
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statusEl = document.getElementById('status');
+        let stream;
+        let scanning = false;
+
+        // Start camera
+        async function startCamera() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                video.srcObject = stream;
+                statusEl.textContent = 'Camera started. Click "Start Scanning" to scan QR codes.';
+            } catch (err) {
+                statusEl.textContent = 'Error accessing camera: ' + err.message;
+            }
+        }
+
+        // Stop camera
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+        }
+
+        // Scan for QR codes
+        function scanQR() {
+            if (!scanning) return;
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height);
+            if (code) {
+                processQRData(code.data);
+                scanning = false;  // Stop after one scan; restart manually
+                statusEl.textContent = 'QR code scanned! Data added to sheet.';
+            }
+            requestAnimationFrame(scanQR);
+        }
+
+        // Process QR data and add to Google Sheet
+        async function processQRData(data) {
+            let name = 'Unknown';
+            let url = data;
+            try {
+                const parsed = JSON.parse(data);
+                name = parsed.name || 'Unknown';
+                url = parsed.url || data;
+            } catch (e) {
+                // Assume plain text is a URL
+            }
+
+            // Append to Google Sheet
+            try {
+                await gapi.client.sheets.spreadsheets.values.append({
+                    spreadsheetId: SHEET_ID,
+                    range: 'Sheet1!A:B',  // Assumes columns A (Name) and B (URL)
+                    valueInputOption: 'RAW',
+                    resource: {
+                        values: [[name, url]]
+                    }
+                });
+                console.log('Data added to sheet');
+            } catch (err) {
+                console.error('Error adding to sheet:', err);
+                statusEl.textContent = 'Error adding to sheet: ' + err.message;
+            }
+        }
+
+        // Event listeners
+        document.getElementById('startBtn').addEventListener('click', () => {
+            if (!scanning) {
+                scanning = true;
+                scanQR();
+                statusEl.textContent = 'Scanning for QR codes...';
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+            }
+        });
+
+        document.getElementById('stopBtn').addEventListener('click', () => {
+            scanning = false;
+            statusEl.textContent = 'Scanning stopped.';
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+        });
+
+        // Initialize camera on load
+        startCamera();
+    </script>
+</body>
+</html>
